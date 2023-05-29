@@ -112,17 +112,25 @@ function _beforeTokenTransfer(address from, address to, uint256 amount) internal
     if (paused()) {
         require(to != address(this), "Dropless: Cannot send to the contract while paused");
 
-        uint256 fee = (amount * feePercentage) / 100; // calculates fee as a percentage of the transfer amount
-        uint256 amountAfterFee = amount - fee;
+        uint256 fee = 0;
+        uint256 amountAfterFee = amount;
 
-        require(amountAfterFee + fee <= balanceOf(from), "Dropless: Transfer amount + fee exceeds balance");
+        // apply fees only on transfers not involving the contract address (prevents blocking token purchases)
+        if (from != address(this) && to != address(this)) {
+            fee = (amount * feePercentage) / 100; // calculates fee as a percentage of the transfer amount
+            amountAfterFee = amount - fee;
 
-        _transfer(from, feeReceiver, fee); // transfer the fee
+            require(amountAfterFee + fee <= balanceOf(from), "Dropless: Transfer amount + fee exceeds balance");
+
+            _transfer(from, feeReceiver, fee); // transfer the fee
+        }
+
         super._beforeTokenTransfer(from, to, amountAfterFee); // transfer the remaining amount
     } else {
         super._beforeTokenTransfer(from, to, amount);
     }
 }
+
 
 
     function _authorizeUpgrade(address newImplementation)
