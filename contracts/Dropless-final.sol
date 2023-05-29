@@ -28,6 +28,9 @@ contract Dropless is Initializable, ERC20Upgradeable, ERC20BurnableUpgradeable, 
     uint256 public priceDrop;
     uint256 public pauseDuration;
 
+    uint256[] public pauseDurations;  // Durations for each price decrease range
+    uint256[] public priceDecreaseRanges;  // Price decrease ranges (e.g., [10, 20, 30] for ranges of up to 10%, 20%, 30%)
+
     uint256 private lastPauseEndTime;
 
     // Discounts for holding specific tokens
@@ -35,6 +38,9 @@ contract Dropless is Initializable, ERC20Upgradeable, ERC20BurnableUpgradeable, 
 
     // Discounts for holding specific NFTs
     mapping(address => mapping(uint256 => uint256)) public nftDiscounts;
+
+    address public feeReceiver;  // The address that receives the fees
+    uint256 public feePercentage;  // The fee percentage (0 - 100)
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -69,7 +75,52 @@ contract Dropless is Initializable, ERC20Upgradeable, ERC20BurnableUpgradeable, 
         nftDiscounts[nft][tokenId] = discount;
     }
 
-    // Other functions...
+    function updatePriceData(uint256 _price, uint256 _timestamp) external {
+        uint256 priceDecrease = (priceData.price - _price) * 100 / priceData.price;
+        if (priceData.price > 0 && priceDecrease > priceDrop) {
+            if (_timestamp - priceData.timestamp <= timeLapse && block.timestamp >= lastPauseEndTime) {
+                _pause();
+
+                // Determine pause duration based on price drop
+                for (uint256 i = 0; i < priceDecreaseRanges.length; i++) {
+                    if (priceDecrease <= priceDecreaseRanges[i]) {
+                        pauseDuration = pauseDurations[i];
+                        break;
+                    }
+                }
+
+                lastPauseEndTime = block.timestamp + pauseDuration;
+            }
+        }
+        priceData.price = _price;
+        priceData.timestamp = _timestamp;
+    }
+
+    function setPauseDurations(uint256[] calldata newPauseDurations) external onlyRole(OWNER_ROLE) {
+        pauseDurations = newPauseDurations;
+    }
+
+    function setPriceDecreaseRanges(uint256[] calldata newPriceDecreaseRanges) external onlyRole(OWNER_ROLE) {
+        priceDecreaseRanges = newPriceDecreaseRanges;
+    }
+
+    function setFeeReceiver(address _feeReceiver) external onlyRole(OWNER_ROLE) {
+        feeReceiver = _feeReceiver;
+    }
+
+    function setFeePercentage(uint256 _feePercentage) external onlyRole(OWNER_ROLE) {
+        require(_feePercentage <= 100, "Dropless: feePercentage cannot be more than 100");
+        feePercentage = _feePercentage;
+    }
+
+    function forceUnpause() external onlyRole(OWNER_ROLE) {
+        _unpause();
+        lastPauseEndTime = block.timestamp;
+    }
+
+    function mint(address to, uint256 amount) external onlyRole(MINTER_ROLE) {
+        _mint(to, amount);
+    }
 
     function _beforeTokenTransfer(address from, address to, uint256 amount) internal override {
         if (paused()) {
@@ -77,39 +128,22 @@ contract Dropless is Initializable, ERC20Upgradeable, ERC20BurnableUpgradeable, 
 
             uint256 fee = (amount * feePercentage) / 100; // calculates fee as a percentage of the transfer amount
 
-            // Check if the sender has any tokens that give discounts
-            for (address
-            // ...
-            // Check if the sender has any tokens that give discounts
-            for (address token in tokenAddresses) {
-                if (IERC20(token).balanceOf(from) > 0) {
-                    uint256 discount = tokenDiscounts[token];
-                    fee = (fee * (100 - discount)) / 100;
-                    break;
-                }
+            // apply fees only on transfers not involving the contract address (prevents blocking token purchases)
+            if (from != address(this) && to != address(this)) {
+                require(amount - fee <= balanceOf(from), "Dropless: Transfer amount + fee exceeds balance");
+                _transfer(from, feeReceiver, fee); // transfer the fee
             }
 
-            // Check if the sender has any NFTs that give discounts
-            for (address nft in nftAddresses) {
-                IERC721 nftContract = IERC721(nft);
-                uint256 balance = nftContract.balanceOf(from);
-                for (uint256 i = 0; i < balance; i++) {
-                    uint256 tokenId = nftContract.tokenOfOwnerByIndex(from, i);
-                    if (nftDiscounts[nft][tokenId] > 0) {
-                        uint256 discount = nftDiscounts[nft][tokenId];
-                        fee = (fee * (100 - discount)) / 100;
-                        break;
-                    }
-                }
-            }
-
-            // Transfer the fee to the owner and subtract it from the transfer amount
-            _transfer(from, getOwner(), fee);
-            amount -= fee;
+            super._beforeTokenTransfer(from, to, amount - fee); // transfer the remaining amount
+        } else {
+            super._beforeTokenTransfer(from, to, amount);
         }
-
-        super._beforeTokenTransfer(from, to, amount);
     }
+
+    function _authorizeUpgrade(address newImplementation)
+        internal
+        onlyRole(UPGRADER_ROLE)
+    {}
 
     function pause() public onlyRole(PAUSER_ROLE) {
         _pause();
@@ -119,12 +153,16 @@ contract Dropless is Initializable, ERC20Upgradeable, ERC20BurnableUpgradeable, 
         _unpause();
     }
 
-    function _authorizeUpgrade(address newImplementation)
-        internal
-        onlyRole(UPGRADER_ROLE)
-    {}
-
     function getOwner() public view returns (address) {
         return getRoleMember(OWNER_ROLE, 0);
+    }
+
+    function supportsInterface(bytes4 interfaceId)
+        public
+        view
+        override(AccessControlUpgradeable, ERC20Upgradeable, ERC20BurnableUpgradeable, ERC20PermitUpgradeable, IERC165Upgradeable)
+        returns (bool)
+    {
+        return super.supportsInterface(interfaceId);
     }
 }
